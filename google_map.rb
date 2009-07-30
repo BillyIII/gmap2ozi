@@ -1,10 +1,8 @@
-#!/usr/bin/ruby
 
 require 'net/http'
 require 'uri'
-require 'RMagick'
-#include Magick
 
+# 2D vector
 class Vector2
 
   attr_accessor :x, :y
@@ -12,16 +10,6 @@ class Vector2
   def initialize(x, y)
     @x = x
     @y = y
-  end
-
-  def Vector2.fromGeoCoords(lat, lon)
-    Vector2.new(lon, Math.atanh(Math.sin(lat/180*Math::PI))/Math::PI*180)
-  end
-
-  def toGeoCoords()
-    yrad = @y / 180 * Math::PI
-    latrad = Math.atan( Math.sinh(yrad) )
-    Vector2.new( @x, (latrad / Math::PI * 180) )
   end
 
   def *(arg)
@@ -33,7 +21,11 @@ class Vector2
   end
   
   def /(arg)
-    Vector2.new(@x / arg, @y / arg)
+    if Vector2 == arg.class
+      Vector2.new(@x / arg.x, @y / arg.y)
+    else
+      Vector2.new(@x / arg, @y / arg)
+    end
   end
   
   def +(arg)
@@ -43,26 +35,102 @@ class Vector2
   def -(arg)
     Vector2.new(@x - arg.x, @y - arg.y)
   end
-  
-  def toGeoString()
-    yrad = @y / 180 * Math::PI
-    latrad = Math.atan( Math.sinh(yrad) )
-    (latrad / Math::PI * 180).to_s + ',' + @x.to_s
+
+  def abs()
+    Vector2.new(@x.abs, @y.abs)
   end
 
-  def toSizeString()
+  def abs!()
+    @x = @x.abs
+    @y = @y.abs
+    self
+  end
+
+  def to_s()
     @x.to_s + 'x' + @y.to_s
   end
-    
+  
 end
 
+def deg2rad(th)
+  th / 180.0 * Math::PI
+end
+
+def rad2deg(th)
+  th / Math::PI * 180.0
+end
+
+# geographical location
+class GeoPoint
+  
+  attr_accessor :lat, :lon
+
+  def initialize(lat, lon)
+    @lat = lat
+    @lon = lon
+  end
+
+  def toProjection()
+    Vector2.new( @lon, Math.atanh( Math.sin(@lat) ) )
+  end
+
+  def GeoPoint.fromProjection(p)
+    GeoPoint.new( Math.atan( Math.sinh(p.y) ), p.x)
+  end
+
+  def lat_deg
+    rad2deg(@lat)
+  end
+
+  def lat_min
+    deg = self.lat_deg
+    (deg - deg.truncate).abs * 60.0
+  end
+
+  def lat_sec
+    min = self.lat_min
+    (min - min.truncate) * 60.0
+  end
+
+  def lon_deg
+    rad2deg(@lon)
+  end
+
+  def lon_min
+    deg = self.lon_deg
+    (deg - deg.truncate).abs * 60.0
+  end
+
+  def lon_sec
+    min = self.lon_min
+    (min - min.truncate) * 60.0
+  end
+
+  def to_s()
+    self.lat_deg.to_s + ',' + self.lon_deg.to_s
+  end
+
+  def GeoPoint.from_s(str)
+    lat, lon = str.scan(/\d+\.\d+/)
+    GeoPoint.new(deg2rad(lat.to_f), deg2rad(lon.to_f))
+  end
+  
+end
+
+class String
+  def to_GeoPoint()
+    GeoPoint.from_s(self)
+  end
+end
+
+# google maps static api wrapper
 class GoogleMap
 
   MAX_IMAGE_WIDTH = 640
   MAX_IMAGE_HEIGHT = 640
-#  MAX_IMAGE_WIDTH = 256
-#  MAX_IMAGE_HEIGHT = 256
   MAX_IMAGE_SIZE = Vector2.new(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT)
+
+  MAX_ZOOM = 19
 
   Format_JPEG = 'jpeg'
   Format_JPEG_Baseline = 'jpeg-baseline'
@@ -89,186 +157,111 @@ class GoogleMap
     @imageFormat = Format_JPEG_Baseline
     @zoom = nil
     @type = Type_Roadmap
-    @language = 'ru'
+    @language = nil
     @sensor = nil
   end
 
+  # image formats
   def imageFormats
     return constants.find_all { |c| 0 == c.index('Format_') }
   end
 
+  # map types
   def types
     return constants.find_all { |c| 0 == c.index('Type_') }
   end
 
+  # make map url from given parameters
   def getUrl()
     url = 'http://maps.google.com/staticmap'
-    url += '?center=' + geoCenter.toGeoString
-    url += '&key=' + apiKey.to_s
-    url += '&format=' + imageFormat.to_s
-    url += '&maptype=' + type.to_s
-    url += '&hl=' + language.to_s
-    url += '&span=' + geoSpan.toGeoString if(geoSpan != nil)
-    url += '&zoom=' + zoom.to_s if(zoom != nil)
-    url += '&size=' + imageSize.toSizeString if(imageSize != nil)
-    url += '&sensor=' + (sensor ? 'true' : 'false') if(sensor != nil)
+    url += '?center=' + @geoCenter.to_s
+    url += '&key=' + @apiKey.to_s
+    url += '&format=' + @imageFormat.to_s
+    url += '&maptype=' + @type.to_s
+    url += '&hl=' + @language.to_s if @language != nil
+    url += '&span=' + @geoSpan.to_s if @geoSpan != nil
+    url += '&zoom=' + @zoom.to_s if @zoom != nil
+    url += '&size=' + @imageSize.to_s if @imageSize != nil
+    url += '&sensor=' + (@sensor ? 'true' : 'false') if @sensor != nil
     url
   end
 
-  def download(path)
+  # fill some parameters from url
+  def parseUrl(url)
+    @zoom = $1.to_i if url =~ /[?&]zoom=([^&]*)/
+    @geoCenter = $1.to_GeoPoint if url =~ /[?&]ll=([^&]*)/
+    @geoSpan = $1.to_GeoPoint if url =~ /[?&]span=([^&]*)/
+    @language = $1.to_s if url =~ /[?&]hl=([^&]*)/
+    self
+  end
+
+  # download map into memory
+  # returns image data
+  def save2blob()
     url = URI.parse(getUrl)
-    puts 'host: ' + url.host
-    puts 'path: ' + url.path
     h = Net::HTTP.start(url.host, url.port) do |http|
       resp, data = http.get(url.path + '?' + url.query)
-      File.open(path, 'wb') do |file|
-        file.write(data)
+      return data
+    end
+  end
+
+  # download map into file
+  def save2file(path)
+    File.write(path, save2blob())
+  end
+
+  # returns (Vector2) size of pixel in projection coordinates
+  def GoogleMap.getPixelSize(zoom)
+    fragsize = 2**zoom * 256
+    Vector2.new(2.0 * Math::PI / fragsize, 2.0 * Math::PI / fragsize)
+  end
+
+  # returns (Vector2) size of pixel in projection coordinates
+  def pixelSize()
+    GoogleMap.getPixelSize(@zoom)
+  end
+
+  # create maps to fill region
+  # nw:        north-west region projection coordinate
+  # zoom:      map zoom
+  # img_size:  full region image size
+  # tile_size: tile size (south-east tiles will be smaller)
+  # block:     callback(image_position, google_map)
+  def GoogleMap.makeTiles(nw, zoom, img_size, tile_size)
+
+    pix_size = GoogleMap.getPixelSize(zoom)
+    
+    geo_pos = Vector2.new(0, nw.y)
+    img_pos = Vector2.new(0, 0)
+    while img_pos.y < img_size.y
+      # height is either tile height or all space left
+      img_h = [tile_size.y, img_size.y - img_pos.y].min
+      
+      geo_pos.y -= (img_h / 2.0) * pix_size.y
+      
+      geo_pos.x = nw.x
+      img_pos.x = 0
+      
+      while img_pos.x < img_size.x
+        img_w = [tile_size.x, img_size.x - img_pos.x].min
+
+        geo_pos.x += (img_w / 2.0) * pix_size.x
+
+        map = GoogleMap.new
+        map.geoCenter = GeoPoint.fromProjection(geo_pos)
+        map.zoom = zoom
+        map.imageSize = Vector2.new(img_w, img_h)
+
+        yield img_pos, map
+
+        geo_pos.x += (img_w / 2.0) * pix_size.x
+        img_pos.x += img_w
       end
+      
+      geo_pos.y -= (img_h / 2.0) * pix_size.y
+      img_pos.y += img_h
     end
   end
 
-  
 end
-
-# -90..+90   (latitude, y)
-# -180..+180 (longtitude, x)
-# nfragments = 4^zoom
-# fragment   = 256x256 px
-
-#
-# 1. get rect geo coords and zoom
-# 2. zoom => pixel size in geo coords
-# 3. => size of rect in pixels
-# 4. split rect into 640x640 tiles
-# 5. download tiles
-# 6. compose single image:
-#    http://www.imagemagick.org/RMagick/doc/image1.html#composite
-# 7. calculate image geo coords
-# 8. make map file
-# 
-
-def getPixelSize(zoom)
-  fragsize = 2**zoom * 256
-  Vector2.new(360.0 / fragsize, 360.0 / fragsize)
-end
-
-c = Vector2.fromGeoCoords(55.928817,37.758293)
-z = 12
-isize = Vector2.new(1000, 1000)
-# c = Vector2.fromGeoCoords(0.0, 0.0)
-# z = 1
-# isize = Vector2.new(512, 512)
-
-gm = GoogleMap.new
-#gm.type = GoogleMap::Type_Satellite
-gm.zoom = z
-gm.imageSize = GoogleMap::MAX_IMAGE_SIZE
-
-pixel_size = getPixelSize(z);
-
-puts pixel_size.toGeoString
-
-num_sect = Vector2.new(isize.x / GoogleMap::MAX_IMAGE_WIDTH,
-                       isize.y / GoogleMap::MAX_IMAGE_HEIGHT)
-last_sect_size = Vector2.new(isize.x % GoogleMap::MAX_IMAGE_WIDTH,
-                             isize.y % GoogleMap::MAX_IMAGE_HEIGHT)
-sect_geo_size = GoogleMap::MAX_IMAGE_SIZE * pixel_size
-last_sect_geo_size = last_sect_size * pixel_size
-
-img = Magick::Image.new(isize.x, isize.y);
-
-img_nw_coord = Vector2.new(c.x - ((isize.x / 2.0) * pixel_size.x),
-                           c.y + ((isize.y / 2.0) * pixel_size.y))
-img_se_coord = Vector2.new(c.x + ((isize.x / 2.0) * pixel_size.x),
-                           c.y - ((isize.y / 2.0) * pixel_size.y))
-
-gm.geoCenter.y = img_nw_coord.y #+ isize.y * pixel_size.y
-y = 0
-while y < isize.y
-  gm.imageSize.y = [GoogleMap::MAX_IMAGE_HEIGHT,
-                            isize.y - y].min
-  
-  gm.geoCenter.y -= (gm.imageSize.y / 2.0) * pixel_size.y
-  
-  gm.geoCenter.x = img_nw_coord.x
-  x = 0
-  
-  while x < isize.x
-    gm.imageSize.x = [GoogleMap::MAX_IMAGE_WIDTH,
-                              isize.x - x].min
-
-    gm.geoCenter.x += (gm.imageSize.x / 2.0) * pixel_size.x
-
-    fname = x.to_s + 'x' + y.to_s + '.jpg'
-    print '(',x,',',y,') ',gm.getUrl,"\n"
-#    gm.download(fname)
-    tile = Magick::Image.read(fname)[0]
-    p tile
-    img.composite!(tile, x, y, Magick::CopyCompositeOp)
-
-    gm.geoCenter.x += (gm.imageSize.x / 2.0) * pixel_size.x
-    x += gm.imageSize.x
-  end
-  
-  gm.geoCenter.y -= (gm.imageSize.y / 2.0) * pixel_size.y
-  y += gm.imageSize.y
-end
-
-imgpath = '1.jpg'
-mappath = '1.map'
-img.write(imgpath)
-
-vars = {}
-vars['COPYRIGHT'] = 'test map'
-vars['IMAGE_PATH'] = imgpath
-vars['IMAGE_WIDTH'] = isize.x
-vars['IMAGE_HEIGHT'] = isize.y
-vars['INIT_X'] = 0
-vars['INIT_Y'] = 0
-vars['SCALE'] = 1.0 # ???
-
-geo_nw = img_nw_coord.toGeoCoords
-geo_se = img_se_coord.toGeoCoords
-vars['NW_LAT'] = geo_nw.y
-vars['NW_LAT_DEG'] = geo_nw.y.truncate
-vars['NW_LAT_MIN'] = (geo_nw.y - geo_nw.y.truncate).abs * 60.0
-vars['NW_LAT_HEMI'] = geo_nw.y > 0 ? 'N' : 'S'
-
-vars['NW_LON'] = geo_nw.x
-vars['NW_LON_DEG'] = geo_nw.x.truncate
-vars['NW_LON_MIN'] = (geo_nw.x - geo_nw.x.truncate).abs * 60.0
-vars['NW_LON_HEMI'] = geo_nw.x > 0 ? 'E' : 'W'
-
-vars['SE_LAT'] = geo_se.y
-vars['SE_LAT_DEG'] = geo_se.y.truncate
-vars['SE_LAT_MIN'] = (geo_se.y - geo_se.y.truncate).abs * 60.0
-vars['SE_LAT_HEMI'] = geo_se.y > 0 ? 'N' : 'S'
-
-vars['SE_LON'] = geo_se.x
-vars['SE_LON_DEG'] = geo_se.x.truncate
-vars['SE_LON_MIN'] = (geo_se.x - geo_se.x.truncate).abs * 60.0
-vars['SE_LON_HEMI'] = geo_se.x > 0 ? 'E' : 'W'
-
-File.open(mappath, 'w') do |file|
-  File.foreach('template.map') do |line|
-    vars.each do |name, value|
-      line.gsub!('%' + name + '%', value.to_s)
-    end
-    file.puts line
-  end
-end
-
-exit
-
-gm = GoogleMap.new
-gm.geoCenter = Vector2.new(55.928817,37.758293)
-gm.zoom = 12
-#gm.geoSpan = Vector2.new(180, 360)
-gm.imageSize = Vector2.new(256, 256)
-#http://maps.google.com/maps?f=q&source=s_q&hl=en&geocode=&q=%D0%BC%D0%BE%D1%81%D0%BA%D0%B2%D0%B0+%D0%BC%D1%8B%D1%82%D0%B8%D1%89%D0%B8&sll=37.0625,-95.677068&sspn=30.130288,56.337891&ie=UTF8&ll=55.928817,37.758293&spn=0.08309,0.22007&t=h&z=12
-#http://maps.google.com/?ie=UTF8&ll=37.0625,-95.677068&spn=30.130288,56.337891&z=4
-#http://maps.google.com/maps?f=q&source=s_q&hl=en&geocode=&q=%D0%BC%D1%8B%D1%82%D0%B8%D1%89%D0%B8+%D1%81%D0%B8%D0%BB%D0%B8%D0%BA%D0%B0%D1%82%D0%BD%D0%B0%D1%8F&sll=37.0625,-95.677068&sspn=30.130288,56.337891&ie=UTF8&ll=55.940068,37.779236&spn=0.041533,0.110035&z=13
-#http://maps.google.com/maps?f=q&source=s_q&hl=en&geocode=&q=%D0%BC%D1%8B%D1%82%D0%B8%D1%89%D0%B8+%D1%81%D0%B8%D0%BB%D0%B8%D0%BA%D0%B0%D1%82%D0%BD%D0%B0%D1%8F&sll=37.0625,-95.677068&sspn=30.130288,56.337891&ie=UTF8&ll=55.935116,37.780867&spn=0.020769,0.055017&z=14
-puts gm.getUrl
-gm.download('2.jpg')
 

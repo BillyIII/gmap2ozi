@@ -11,6 +11,9 @@
 # -?, --help:
 #    show help
 #
+# -l, --language:
+#    set 2-letter language code
+#
 # map_file:
 #    generated map file name
 #
@@ -32,6 +35,9 @@
 # -t, --image-type TYPE:
 #    set image type (default: jpeg)
 #    TYPE must be one of jpeg, jpeg-baseline, png8, png32, gif
+#
+# --no-download:
+#    don't download anything - create blank image
 #
 # REGION PARAMETERS:
 #  The following parameters define geographical region to render.
@@ -64,6 +70,8 @@ require 'google_map'
 # read agruments
 opts = GetoptLong.new(
                       [ '--help', '-?', GetoptLong::NO_ARGUMENT ],
+                      [ '--language', '-l', GetoptLong::REQUIRED_ARGUMENT ],
+                      [ '--no-download', '', GetoptLong::NO_ARGUMENT ],
                       [ '--image-width', '-w', GetoptLong::REQUIRED_ARGUMENT ],
                       [ '--image-height', '-h', GetoptLong::REQUIRED_ARGUMENT ],
                       [ '--image-zoom', '-z', GetoptLong::REQUIRED_ARGUMENT ],
@@ -85,12 +93,18 @@ region_center = nil
 region_ne = nil
 region_sw = nil
 region_size = nil
+lang = nil
+no_donwload = false
 
 opts.each do |opt, arg|
   case opt
   when '--help'
     RDoc::usage
     exit 0
+  when '--no-download'
+    no_download = true
+  when '--language'
+    lang = arg
   when '--image-width'
     image_width = arg.to_i
   when '--image-height'
@@ -126,14 +140,15 @@ map_path = File.expand_path(ARGV.shift)
 if ARGV.length > 0
   img_path = File.expand_path(ARGV.shift)
 else
-  img_path = case image_type
-             when 'jpeg' then 'jpg'
-             when 'jpeg-baseline' then 'jpg'
-             when 'png8' then 'png'
-             when 'png32' then 'png32'
-             when 'gif' then 'gif'
-             else image_type
-             end
+  img_path = map_path[0..-File.extname(map_path).length] +
+    case image_type
+    when 'jpeg' then 'jpg'
+    when 'jpeg-baseline' then 'jpg'
+    when 'png8' then 'png'
+    when 'png32' then 'png32'
+    when 'gif' then 'gif'
+    else image_type
+    end
 end
 
 # 1. calc region size
@@ -162,9 +177,16 @@ if nil == image_zoom
     abort 'Not enough parameters to calculate image size'
   end
 
-  # TODO: some logarithms )
-  raise '# TODO: some logarithms )'
-  
+  # calc pixel size
+  ps_x = region_size.x / width
+  ps_y = region_size.y / height
+  # get the smallest one (for max zoom)
+  ps = ps_x < ps_y ? ps_x : ps_y
+  # calc zoom
+  zoom = log( 2.0 * Math.PI / ( ps * 256 ) ) / Math.log(2)
+  zoom = zoom.ceil
+  zoom = GoogleMap::MAX_ZOOM if zoom > GoogleMap::MAX_ZOOM
+
 end
 
 image_size = region_size / GoogleMap.getPixelSize(image_zoom)
@@ -188,7 +210,7 @@ region_se = Vector2.new(region_center.x + region_size.x / 2,
                         region_center.y - region_size.y / 2) 
 
 #raise "TEST!!!"
-
+# -c 55.928817,37.758293 -z 12 -w 1000 -h 1000 -l ru -t jpeg 1.map
 # c = GeoPoint.new(deg2rad(55.928817), deg2rad(37.758293)).toProjection()
 # z = 12
 # isize = Vector2.new(1000, 1000)
@@ -226,13 +248,18 @@ img = Magick::Image.new(image_size.x, image_size.y);
 
 GoogleMap.makeTiles(region_nw, image_zoom,
                     image_size, GoogleMap::MAX_IMAGE_SIZE) do |pos, map|
+  map.language = lang
+  map.imageFormat = image_type
   print '(',pos.x,',',pos.y,') ',map.getUrl,"\n"
-  #blob = map.save2blob
-  fname = pos.x.to_s + 'x' + pos.y.to_s + '.jpg'
-  blob = File.read(fname)
-  tile = Magick::Image.from_blob(blob)[0]
-  p tile
-  img.composite!(tile, pos.x, pos.y, Magick::CopyCompositeOp)
+  #  p map
+  if !no_download
+    blob = map.save2blob
+    #  fname = pos.x.to_s + 'x' + pos.y.to_s + '.jpg'
+    #  blob = File.read(fname)
+    tile = Magick::Image.from_blob(blob)[0]
+    p tile
+    img.composite!(tile, pos.x, pos.y, Magick::CopyCompositeOp)
+  end
 end
 
 img.write(img_path)
@@ -268,6 +295,7 @@ vars['SE_LON_DEG'] = geo_se.lon_deg.abs.truncate
 vars['SE_LON_MIN'] = geo_se.lon_min
 vars['SE_LON_HEMI'] = geo_se.lon > 0 ? 'E' : 'W'
 
+print 'Writing map to ', map_path, "\n"
 File.open(map_path, 'w') do |file|
   File.foreach('template.map') do |line|
     vars.each do |name, value|
@@ -277,6 +305,6 @@ File.open(map_path, 'w') do |file|
   end
 end
 
-
+puts 'Done.'
 
 
